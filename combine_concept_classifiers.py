@@ -1,9 +1,11 @@
 import torch as ch
 from sklearn.ensemble import RandomForestClassifier
+from poutyne.framework import Model
 import torchvision
 import vgg_model
 import torchvision.transforms as transforms
 from tqdm import tqdm
+import numpy as np
 import os
 import utils
 
@@ -71,14 +73,15 @@ if __name__ =="__main__":
 		features_test.append(get_actual_scores(X_val, model))
 		# Explicitly free memory
 		del model
+
 	features_train = ch.stack(features_train).squeeze(-1).numpy().transpose()
 	features_test  = ch.stack(features_test).squeeze(-1).numpy().transpose()
-	
+
 	# Train RFC using these fratures
 	clf = RandomForestClassifier(max_depth=5, random_state=0)
 	# Train model
 	clf.fit(features_train, Y_train)
 	# Display performance on training data
 	print("Accuracy on train data : %.4f" % (100 * clf.score(features_train, Y_train)))
-	print("Accuracy on test data : %.4f"  % (100 * clf.score(features_test, Y_val)))
+	print("Accuracy on test  data : %.4f"  % (100 * clf.score(features_test, Y_val)))
 	

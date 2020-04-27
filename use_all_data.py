@@ -1,6 +1,6 @@
-import os
 from PIL import Image
 import vgg_model
+from sklearn.metrics import accuracy_score
 import torch as ch
 import torchvision
 import torchvision.transforms as transforms
@@ -8,6 +8,7 @@ from tqdm import tqdm as pbar
 from torch.utils.tensorboard import SummaryWriter
 import torch.optim as optim
 import copy
+import os
 
 import utils
 
@@ -20,12 +21,13 @@ def test_model(model, params):
     # Iterate over data
     for image, label in params[phase+'_loader']:
         image = image.cuda()
+        for i, l in enumerate(label):
+            gt.append(l.item())
 
         with ch.no_grad():
             prediction = ch.argmax(model(image), 1).cpu()
             for pred in prediction:
                 preds.append(pred)
-
     logs['Accuracy'] = accuracy_score(gt, preds)
     
     return logs['Accuracy']
@@ -33,7 +35,7 @@ def test_model(model, params):
 
 def train_model(model, params):
     writer = SummaryWriter('runs/' + params['description'])
-    optimizer = optim.SGD(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters())
     total_updates = params['num_epochs'] * len(params['train_loader'])
     
     criterion = ch.nn.CrossEntropyLoss()
@@ -65,8 +67,8 @@ def train_model(model, params):
                     
                     # Forward pass
                     prediction = model(image)
-                    loss = criterion(prediction, label.unsqueeze(1).float())
-                    accuracy = ch.sum(ch.argmax(prediction, 1) == label.data.unsqueeze(1)).item()
+                    loss = criterion(prediction, label)
+                    accuracy = ch.sum(ch.argmax(prediction, 1) == label.data).item()
                     
                     with ch.no_grad():
                         y_ = (ch.argmax(prediction, 1).flatten().cpu().numpy()) * 1
@@ -99,7 +101,7 @@ def train_model(model, params):
         if epoch % params['check_point'] == 0 or epoch == params['num_epochs']-1:
             ch.save(best_model, "./use_all_data.pt")
     
-    final_accuracy = test_model(model, params, mapping)
+    final_accuracy = test_model(model, params)
     writer.add_text('Final_Accuracy', str(final_accuracy), 0)
     writer.close()
 
@@ -132,7 +134,7 @@ if __name__ == "__main__":
     train_loader, validation_loader = make_folder_loaders(data_params)
 
     train_params = {'description':  "use_all_data",
-                    'num_epochs': 100, 'check_point': 5,
+                    'num_epochs': 25, 'check_point': 5,
                     'train_loader': train_loader,
                     'validation_loader': validation_loader}
 

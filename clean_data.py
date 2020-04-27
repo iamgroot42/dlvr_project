@@ -16,8 +16,9 @@ def clean_folder(path):
 
 
 if __name__ == "__main__":
+    import sys
+    datapath = sys.argv[1]
     print("[Start] Data Cleaning")
-    datapath = "./finegrained_data/"
     for basepath in os.listdir(datapath): 
         for path in os.listdir(os.path.join(datapath, basepath)):
             # Remove corrupt images

@@ -154,11 +154,6 @@ if __name__ == "__main__":
     data_params = {'path': basepath, 'batch_size': 128}
     train_loader, validation_loader = make_folder_loaders(data_params)
 
-    print(train_loader.dataset.classes)
-    print(train_loader.dataset.class_to_idx)
-    print(validation_loader.dataset.classes)
-    print(validation_loader.dataset.class_to_idx)
-
     for concept_class in classes:
         train_params = {'description':  clss + "_" + concept_class,
                         'num_epochs': 20, 'check_point': 5,

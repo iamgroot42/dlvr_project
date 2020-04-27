@@ -9,7 +9,7 @@ __all__ = [
 
 class VGG(nn.Module):
 
-    def __init__(self, features, num_classes=10, init_weights=True):
+    def __init__(self, features, num_classes=10, num_latent=4096, init_weights=True):
         super(VGG, self).__init__()
         self.features = features
         self.avgpool = nn.AdaptiveAvgPool2d((7, 7))
@@ -17,19 +17,24 @@ class VGG(nn.Module):
             nn.Linear(512 * 7 * 7, 4096),
             nn.ReLU(True),
             nn.Dropout(),
-            nn.Linear(4096, 4096),
+            nn.Linear(4096, num_latent),
             nn.ReLU(True),
             nn.Dropout(),
-            nn.Linear(4096, num_classes),
+            nn.Linear(num_latent, num_classes),
         )
         if init_weights:
             self._initialize_weights()
 
-    def forward(self, x):
+    def forward(self, x, with_latent=False):
         x = self.features(x)
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
-        x = self.classifier(x)
+        for i, layer in enumerate(self.classifier):
+            x = layer(x)
+            if with_latent and i == 5:
+                latent = x
+        if with_latent:
+            return (latent, x)
         return x
 
     def _initialize_weights(self):
