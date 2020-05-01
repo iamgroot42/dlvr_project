@@ -35,7 +35,37 @@ class VggFeatureExtractor(nn.Module):
         return x
 
 
-def finetune_into_binary(m, last_binary=True):
+class MultipleModelsWrapper:
+  def __init__(self, models, clf, latent):
+    self.models = models
+    self.clf = clf
+    self.latent= latent
+
+  def __call__(self, x):
+    features = []
+    for model in self.models:
+      with ch.no_grad():
+        if self.latent:
+          score = model(x, with_latent=True)[0].cpu()
+        else:
+          score = model(x).cpu()
+      features.append(score)
+    features = ch.stack(features, 0).numpy()
+    features = features.transpose((1, 0, 2))
+    features = features.reshape((features.shape[0], -1))
+    logits = self.clf.predict_log_proba(features)
+    return ch.from_numpy(logits)
+
+
+class PyTorchWrapper:
+  def __init__(self, model):
+    self.model = model
+
+  def __call__(self, x):
+    return model(x)
+
+
+def finetune_into_binary(m, last_binary=True, on_cpu=False):
     # Freeze feature extraction layers
     for n, l in m.named_parameters():
         if "features." in n:
@@ -43,15 +73,19 @@ def finetune_into_binary(m, last_binary=True):
     # Swap out final classification layer
     if last_binary:
         m.classifier[6] = ch.nn.Linear(m.classifier[6].weight.shape[1], 1)
+    if on_cpu:
+        return ch.nn.DataParallel(m)
     return ch.nn.DataParallel(m.cuda())
 
 
-def finetune_into_binary_with_features(m, num_latent):
+def finetune_into_binary_with_features(m, num_latent, on_cpu=False):
     # Freeze feature extraction layers
     for n, l in m.named_parameters():
         if "features." in n:
             l.requires_grad  = False
     new_model = VggFeatureExtractor(m, num_latent)
+    if on_cpu:
+        return ch.nn.DataParallel(new_model)
     return ch.nn.DataParallel(new_model.cuda())
 
 
@@ -95,3 +129,14 @@ def make_folder_loaders(path):
     trainloader = ch.utils.data.DataLoader(trainset, batch_size=128, shuffle=True,  num_workers=4)
     testloader  = ch.utils.data.DataLoader(testset,  batch_size=128, shuffle=False, num_workers=4)
     return trainloader, testloader
+
+
+def get_multiclass_acc(model, data_loader):
+    acc, count = 0, 0
+    for im, label in data_loader:
+        im, label = im.cuda(), label.cuda()
+        with ch.no_grad():
+            prediction = model(im)
+        acc += ch.sum(ch.argmax(prediction, 1) == label.data).item()
+        count += im.shape[0]
+    return acc / count

@@ -3,6 +3,8 @@ __pycache__/*
 *.pyc
 *.pth
 *.pt
+*.png
+meta_classifier_*
 
 concept_classifiers/*
 finegrained_data_split/*

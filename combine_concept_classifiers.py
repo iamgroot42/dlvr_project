@@ -6,6 +6,7 @@ import torchvision
 import vgg_model
 import torchvision.transforms as transforms
 from tqdm import tqdm
+import pickle
 import numpy as np
 import os
 import utils
@@ -25,9 +26,9 @@ def get_actual_scores(X, classifier, latent, batch_size=5000):
 	while i < len(X):
 		with ch.no_grad():
 			if latent:
-				score = classifier(X[i:i + batch_size]).cpu()
-			else:
 				score = classifier(X[i:i + batch_size], with_latent=True)[0].cpu()
+			else:
+				score = classifier(X[i:i + batch_size]).cpu()
 		features.append(score)
 		i += batch_size
 	return ch.cat(features, 0)
@@ -41,6 +42,7 @@ if __name__ =="__main__":
 		latent = False
 	else:
 		latent = True
+	print("Latent mode : %s" % latent)
 	# Get CIFAR10 loaders
 	trainloader, testloader = utils.get_cifar_dataloaders()
 	X_train, Y_train = get_combined_data(trainloader)
@@ -50,7 +52,8 @@ if __name__ =="__main__":
 	Y_val   = Y_val.cpu().numpy()
 	# Use concept classifiers to get scores
 	features_train, features_test = [], []
-	for ccpath in tqdm(os.listdir(cc_dir)):
+	for index, ccpath in tqdm(enumerate(os.listdir(cc_dir))):
+		print(index, os.path.join(cc_dir, ccpath))
 		if latent:
 			model = utils.finetune_into_binary_with_features(vgg_model.vgg19_bn(pretrained=True), num_latent=80)
 		else:
@@ -81,6 +84,9 @@ if __name__ =="__main__":
 		clf = RandomForestClassifier(max_depth=5, random_state=0)
 	# Train model
 	clf.fit(features_train, Y_train)
+	# Save picked classifier
+	pickle.dump(clf, open("meta_classifier_%s" % latent, 'wb'))
+	print("Saved meta-classifier")
 	# Display performance on training data
 	print("Accuracy on train data : %.4f" % (100 * clf.score(features_train, Y_train)))
 	print("Accuracy on test  data : %.4f"  % (100 * clf.score(features_test, Y_val)))

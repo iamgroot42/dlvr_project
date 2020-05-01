@@ -1,14 +1,13 @@
 import torch as ch
 import torch.nn as nn
 import os
-import vgg_model
-import torchvision
-import torchvision.transforms as transforms
 from torch.utils.tensorboard import SummaryWriter
 import torch.optim as optim
 import copy
 from tqdm import tqdm
 import numpy as np
+
+import utils, vgg_model
 
 
 def make_small_concept_model(dim_in):
@@ -120,14 +119,7 @@ def train_shared_latent_model(model, nb_epochs, cifar_loaders, concept_loaders, 
 
         # Calculate accuracy metrics on CIFAR-10 validation
         model.eval()
-        acc, count = 0, 0
-        for im, label in cifar_loaders[1]:
-            im, label = im.cuda(), label.cuda()
-            with ch.no_grad():
-                prediction = model(im)
-            acc += ch.sum(ch.argmax(prediction, 1) == label.data).item()
-            count += im.shape[0]
-        cifar10_val_acc = acc / count
+        cifar10_val_acc = utils.get_multiclass_acc(model, cifar_loaders[1])
 
         # Calculate accuracy statistics on all other data loaders
         concept_accs = [[0 for j in range(m)] for m in mappings]
@@ -179,6 +171,10 @@ if __name__ =="__main__":
     concepts_folder = sys.argv[1]
     alpha           = int(sys.argv[2])
     beta            = float(sys.argv[3])
+    mode            = sys.argv[4]
+    if mode not in ["train", "test"]:
+        raise ValueError("Mode should be in [train, test]")
+
     assert 0 <= beta and beta <= 1, "beta should be a valid probability"
     # Architecture specifics
     per_class_concept_latent = 80
@@ -204,10 +200,17 @@ if __name__ =="__main__":
     # Creaate normal CIFAR-10 loader
     cifar_loaders = utils.get_cifar_dataloaders()
     # Define model
-    model = nn.DataParallel(vgg_model.vgg19_bn(pretrained=False, num_latent=per_class_concept_latent * num_total_concepts)).cuda()
-    #  Train model with shared encoders
-    nb_epochs = 150
-    train_shared_latent_model(model, nb_epochs,
-                              cifar_loaders, concept_loaders,
-                              mappings, latent_ranges,
-                              alpha=alpha, beta=beta)
+    model = vgg_model.vgg19_bn(pretrained=False, num_latent=per_class_concept_latent * num_total_concepts).cuda()
+    if mode == "train":
+        model = nn.DataParallel(model)
+        #  Train model with shared encoders
+        nb_epochs = 200
+        train_shared_latent_model(model, nb_epochs,
+                                cifar_loaders, concept_loaders,
+                                mappings, latent_ranges,
+                                alpha=alpha, beta=beta)
+    else:
+        checkpoint = ch.load("./shared_latent_space_commontask_model_%d_%f.pt" % (alpha, beta))
+        model.load_state_dict(checkpoint.module.state_dict())
+        model.eval()
+        print("Accuracy on test data : %.3f" % utils.get_multiclass_acc(model, cifar_loaders[1]))

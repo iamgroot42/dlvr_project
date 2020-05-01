@@ -128,7 +128,7 @@ if __name__ == "__main__":
     import sys
     basepath   = sys.argv[1]
     mode       = sys.argv[2]
-    num_latent = 80
+    num_latent = 4096 #80
     if mode not in ['test', 'train']:
         raise ValueError("Specify proper mode : train/test")
 
