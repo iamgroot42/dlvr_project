@@ -116,43 +116,29 @@ def finetune_model(model, params, mapping, threshold=0.3):
                  
         # Write best weights to disk
         if epoch % params['check_point'] == 0 or epoch == params['num_epochs']-1:
-            ch.save(best_model, os.path.join("./concept_classifiers", params['description'] + '.pt'))
+            # ch.save(best_model, os.path.join("./concept_classifiers", params['description'] + '.pt'))
+            ch.save(best_model, os.path.join("./concept_classifiers_small", params['description'] + '.pt'))
     
     final_accuracy = test_model(model, params, mapping)[0]
     writer.add_text('Final_Accuracy', str(final_accuracy), 0)
     writer.close()
 
 
-def make_folder_loaders(params):
-    transform_train = transforms.Compose([transforms.Resize((32, 32)),
-                                          transforms.RandomHorizontalFlip(),
-                                          transforms.ColorJitter(.25,.25,.25),
-                                          transforms.RandomRotation(2),
-                                          transforms.ToTensor(),
-                                          transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010])])
-    
-    transform_validation = transforms.Compose([transforms.Resize((32, 32)),
-                                               transforms.ToTensor(),
-                                               transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010])])
-    
-    trainset = torchvision.datasets.ImageFolder(root=os.path.join(params['path'], "train"), transform=transform_train)
-    testset  = torchvision.datasets.ImageFolder(root=os.path.join(params['path'], "test"),   transform=transform_validation)
-    
-    trainloader = ch.utils.data.DataLoader(trainset, batch_size=params['batch_size'], shuffle=True, num_workers=4)
-    testloader  = ch.utils.data.DataLoader(testset, batch_size=params['batch_size'], shuffle=False, num_workers=4)
-    return trainloader, testloader
-
-
 if __name__ == "__main__":
     import sys
-    basepath = sys.argv[1]
+    basepath   = sys.argv[1]
+    mode       = sys.argv[2]
+    num_latent = 80
+    if mode not in ['test', 'train']:
+        raise ValueError("Specify proper mode : train/test")
+
     clss = basepath.rstrip().split(os.path.sep)[-2]
     
     classes = os.listdir(os.path.join(basepath, "train"))
     concept_classifiers = {x:None for x in classes}
 
     data_params = {'path': basepath, 'batch_size': 128}
-    train_loader, validation_loader = make_folder_loaders(data_params)
+    train_loader, validation_loader = utils.make_folder_loaders(basepath)
 
     for concept_class in classes:
         train_params = {'description':  clss + "_" + concept_class,
@@ -160,11 +146,27 @@ if __name__ == "__main__":
                         'train_loader': train_loader,
                         'validation_loader': validation_loader}
 
-        concept_classifiers[concept_class] = utils.finetune_into_binary(vgg_model.vgg19_bn(pretrained=True))
+        if num_latent == 4096:
+            concept_classifiers[concept_class] = utils.finetune_into_binary(vgg_model.vgg19_bn(pretrained=True))
+        else:
+            concept_classifiers[concept_class] = utils.finetune_into_binary_with_features(vgg_model.vgg19_bn(pretrained=True), num_latent=num_latent)
         concept_mapping = {i:0 for i in range(len(classes))}
         concept_mapping[train_loader.dataset.class_to_idx[concept_class]] = 1
-        finetune_model(concept_classifiers[concept_class], train_params, concept_mapping)
 
-        for i in range(11):
-            acc = test_model(concept_classifiers[concept_class], train_params, concept_mapping, i / 10)
-            print("Threshold %.2f : Acc %.3f, F-1 %.3f" % (i/10, acc[0], acc[1]))
+        if mode == 'train':
+            finetune_model(concept_classifiers[concept_class], train_params, concept_mapping)
+        else:
+            # Load model
+            models_path = sys.argv[3]
+            concept_classifiers[concept_class].load_state_dict(ch.load(os.path.join(models_path, train_params['description'] + ".pt")))
+            concept_classifiers[concept_class].eval()
+            # Calculate F-1 metrics
+            gran = 20
+            best_f1 = 0
+            for i in range(gran + 1):
+                acc = test_model(concept_classifiers[concept_class], train_params, concept_mapping, i / gran)
+                if acc[1] > best_f1:
+                    best_f1 = acc[1]
+            print("%s : best F-1 Score : %.3f" % (train_params['description'], best_f1))
+            # Free up space
+            del concept_classifiers[concept_class]

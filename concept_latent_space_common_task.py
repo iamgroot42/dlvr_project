@@ -29,14 +29,12 @@ def batch_cycle_repeater(dloader):
         yield (image, label)
 
 
-def train_shared_latent_model(model, nb_epochs, cifar_loaders, concept_loaders, concept_models, mappings, latent_ranges, alpha=2, beta=1):
+def train_shared_latent_model(model, nb_epochs, cifar_loaders, concept_loaders, mappings, latent_ranges, alpha=2, beta=1):
     writer = SummaryWriter('runs/shared_latent_space_model')
     optimizer = optim.Adam(model.parameters())
     
     # Define loss for main task
     criterion = nn.CrossEntropyLoss()
-    # Define loss for inner criterion
-    criterion_concept = nn.BCEWithLogitsLoss()
         
     for epoch in range(nb_epochs):
         # Set model to training mode
@@ -45,10 +43,9 @@ def train_shared_latent_model(model, nb_epochs, cifar_loaders, concept_loaders, 
         # Each epoch has a training and validation phase
         print("Epoch : %d" % (epoch + 1))
         examples_so_far = 0
-        examples_so_far_inside = 0
             
         # Loss accumulator for each epoch
-        logs = {'Loss': 0.0, 'Accuracy': 0.0, 'Aux_Loss': 0.0}
+        logs = {'Loss': 0.0, 'Accuracy': 0.0}
             
         # Iterate over training data
         iterator = tqdm(cifar_loaders[0])
@@ -64,9 +61,6 @@ def train_shared_latent_model(model, nb_epochs, cifar_loaders, concept_loaders, 
             loss = criterion(prediction, label)
 
             accuracy = ch.sum(ch.argmax(prediction, 1) == label.data).item()
-                    
-            with ch.no_grad():
-                y_ = (ch.argmax(prediction, 1)).flatten().cpu().numpy() * 1
 
             # Update log
             examples_so_far += image.shape[0]
@@ -87,39 +81,34 @@ def train_shared_latent_model(model, nb_epochs, cifar_loaders, concept_loaders, 
                     image = image.cuda()
                     label = label.cuda()
 
-                    # Convert labels using the given mapping
-                    for j, l in enumerate(label):
-                        label[j] = (l.item() == focus_concept) * 1
-
                     # Zero gradient
                     optimizer.zero_grad()
 
                     # Forward pass
                     latent, _ = model(image, with_latent=True)
 
-                    # Filter out relevant latent code
-                    latent_code = latent[:, latent_ranges[i][focus_concept][0]: latent_ranges[i][focus_concept][1]]
+                    # Zero out all other tensors while passing inputs forward
+                    latent[:, :latent_ranges[i][focus_concept][0]] = 0
+                    latent[:, latent_ranges[i][focus_concept][1]:] = 0
 
                     # Pass through corresponding concept classifier
-                    prediction = concept_models[i][focus_concept](latent_code)
-                    loss = criterion_concept(prediction, label.unsqueeze(1).float())
+                    prediction = model.module.classifier[-1](latent)
+                    loss = criterion(prediction, label)
+
+                    accuracy = ch.sum(ch.argmax(prediction, 1) == label.data).item()
 
                     # Update log
-                    examples_so_far_inside += image.shape[0]
-                    logs['Aux_Loss'] += loss.detach().item() * image.shape[0]
+                    examples_so_far += image.shape[0]
+                    logs['Loss'] += loss.detach().item() * image.shape[0]
+                    logs['Accuracy'] += accuracy
 
                     # BackProp
                     loss.backward()
                     optimizer.step()
 
             # Update logging stats
-            if examples_so_far_inside != 0:
-                iterator.set_description('Aux Loss: %.2f Loss: %.2f Accuracy: %.2f' % (logs['Aux_Loss'] / examples_so_far_inside,
-                                                                                       logs['Loss'] / examples_so_far,
-                                                                                       100 * logs['Accuracy'] / examples_so_far))
-            else:
-                iterator.set_description('Loss: %.2f Accuracy: %.2f' % (logs['Loss'] / examples_so_far,
-                                                                        100 * logs['Accuracy'] / examples_so_far))
+            iterator.set_description('Loss: %.2f Accuracy: %.2f' % (logs['Loss'] / examples_so_far,
+                                                                    100 * logs['Accuracy'] / examples_so_far))
 
             
         # Normalize and write the data to TensorBoard
@@ -128,9 +117,6 @@ def train_shared_latent_model(model, nb_epochs, cifar_loaders, concept_loaders, 
             
         writer.add_scalars('Loss', {"train": logs['Loss']}, epoch)
         writer.add_scalars('Accuracy', {"train": logs['Accuracy']}, epoch)
-            
-        # Log statistics on train data
-        print("%s loss: %.2f , accuracy: %.2f" % ("train", logs['Loss'], 100 * logs['Accuracy']))
 
         # Calculate accuracy metrics on CIFAR-10 validation
         model.eval()
@@ -157,19 +143,15 @@ def train_shared_latent_model(model, nb_epochs, cifar_loaders, concept_loaders, 
 
                 # Across all concepts
                 for j in range(mappings[i]):
-                    label_ = []
-                    # Convert labels using the given mapping
-                    for k, l in enumerate(label):
-                        label_.append((l.item() == j) * 1)
-                    label_ = np.array(label_)
-
-                    # Filter out relevant latent code
-                    latent_code = latent[:, latent_ranges[i][j][0]: latent_ranges[i][j][1]]
+                    
+                    # Zero out all other tensors while passing inputs forward
+                    latent[:, :latent_ranges[i][j][0]] = 0
+                    latent[:, latent_ranges[i][j][1]:] = 0
 
                     # Pass through corresponding concept classifier
                     with ch.no_grad():
-                        prediction = concept_models[i][j](latent_code)
-                    concept_accs[i][j] += np.sum((ch.sigmoid(prediction) >= 0.5).cpu().numpy().squeeze(-1) == label_)
+                        prediction = model.module.classifier[-1](latent)
+                    concept_accs[i][j] += ch.sum(ch.argmax(prediction, 1) == label.data).item()
 
             # Normalize to obtain accuracies
             for j in range(mappings[i]):
@@ -179,7 +161,7 @@ def train_shared_latent_model(model, nb_epochs, cifar_loaders, concept_loaders, 
         concept_accs_flat = []
         for x in concept_accs:
             for y in x:
-                concept_accs_flat.append(100 *y)
+                concept_accs_flat.append(100 * y)
         # Compute mean, std of concept classifier accuracies
         concept_mean, concept_std = np.mean(concept_accs_flat), np.std(concept_accs_flat)
 
@@ -188,7 +170,7 @@ def train_shared_latent_model(model, nb_epochs, cifar_loaders, concept_loaders, 
                  
         # Write best weights to disk
         if epoch % 5 == 0 or epoch == nb_epochs - 1:
-            ch.save(model, "./shared_latent_space_model_%d_%f.pt" % (alpha, beta))
+            ch.save(model, "./shared_latent_space_commontask_model_%d_%f.pt" % (alpha, beta))
 
 
 
@@ -206,7 +188,6 @@ if __name__ =="__main__":
     concept_loaders = []
     latent_ranges   = []
     mappings        = []
-    concept_models  = []
     # Define specifics for training
     for class_folder in os.listdir(concepts_folder):
         concept_loader = utils.make_folder_loaders(os.path.join(concepts_folder, class_folder))
@@ -214,8 +195,6 @@ if __name__ =="__main__":
         num_concepts = len(concept_loader[0].dataset.classes)
         mappings.append(num_concepts)
         concept_loaders.append((batch_cycle_repeater(concept_loader[0]), concept_loader[1]))
-        # Create concept models
-        concept_models.append([make_small_concept_model(per_class_concept_latent) for _ in range(num_concepts)])
         # Create latent ranges
         latent_range = []
         for i in range(num_concepts):
@@ -227,8 +206,8 @@ if __name__ =="__main__":
     # Define model
     model = nn.DataParallel(vgg_model.vgg19_bn(pretrained=False, num_latent=per_class_concept_latent * num_total_concepts)).cuda()
     #  Train model with shared encoders
-    nb_epochs = 200
+    nb_epochs = 150
     train_shared_latent_model(model, nb_epochs,
                               cifar_loaders, concept_loaders,
-                              concept_models, mappings,
-                              latent_ranges, alpha=alpha, beta=beta)
+                              mappings, latent_ranges,
+                              alpha=alpha, beta=beta)
