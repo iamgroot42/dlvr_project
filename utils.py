@@ -36,25 +36,27 @@ class VggFeatureExtractor(nn.Module):
 
 
 class MultipleModelsWrapper:
-  def __init__(self, models, clf, latent):
+  def __init__(self, models, clf, latent, n_gpus=4):
     self.models = models
     self.clf = clf
     self.latent= latent
+    self.n_gpus = n_gpus
 
   def __call__(self, x):
     features = []
-    for model in self.models:
+    x_ = [x.to('cuda:%d' % i) for i in range(self.n_gpus)]
+    for i, model in enumerate(self.models):
       with ch.no_grad():
         if self.latent:
-          score = model(x, with_latent=True)[0].cpu()
+          score = model(x_[i % self.n_gpus], with_latent=True)[0].cpu()
         else:
-          score = model(x).cpu()
+          score = model(x_[i % self.n_gpus]).cpu()
       features.append(score)
     features = ch.stack(features, 0).numpy()
     features = features.transpose((1, 0, 2))
     features = features.reshape((features.shape[0], -1))
     logits = self.clf.predict_log_proba(features)
-    return ch.from_numpy(logits)
+    return ch.from_numpy(logits).cuda()
 
 
 class PyTorchWrapper:
@@ -63,6 +65,14 @@ class PyTorchWrapper:
 
   def __call__(self, x):
     return model(x)
+
+
+class WrappedModel(nn.Module):
+    def __init__(self, module):
+        super(WrappedModel, self).__init__()
+        self.module = module # that I actually define.
+    def forward(self, x, with_latent=False):
+        return self.module(x, with_latent=with_latent)
 
 
 def finetune_into_binary(m, last_binary=True, on_cpu=False):
@@ -74,7 +84,7 @@ def finetune_into_binary(m, last_binary=True, on_cpu=False):
     if last_binary:
         m.classifier[6] = ch.nn.Linear(m.classifier[6].weight.shape[1], 1)
     if on_cpu:
-        return ch.nn.DataParallel(m)
+        return m
     return ch.nn.DataParallel(m.cuda())
 
 
@@ -85,7 +95,7 @@ def finetune_into_binary_with_features(m, num_latent, on_cpu=False):
             l.requires_grad  = False
     new_model = VggFeatureExtractor(m, num_latent)
     if on_cpu:
-        return ch.nn.DataParallel(new_model)
+        return new_model
     return ch.nn.DataParallel(new_model.cuda())
 
 

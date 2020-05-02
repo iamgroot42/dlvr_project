@@ -18,7 +18,7 @@ def _apply_black_border(x, border_size):
   return nn.ConstantPad2d(border_size, 0)(x)
 
 
-def apply_transformation(x, trans, on_cpu):
+def apply_transformation(x, trans):
   dx, dy, angle = trans[0], trans[1], trans[2]
   height, width = x.shape[2], x.shape[3]
 
@@ -32,16 +32,14 @@ def apply_transformation(x, trans, on_cpu):
 
   # Apply rotation
   angle = ch.from_numpy(np.ones(x.shape[0]) * angle)
-  if not on_cpu:
-    angle = angle.to(x.get_device())
+  angle = angle.to(x.get_device())
   x = rotate(x, angle)
 
   # Apply translation
   dx_in_px = -dx * height
   dy_in_px = -dy * width
   translation = ch.from_numpy(np.tile(np.array([dx_in_px, dy_in_px], dtype=np.float32), (x.shape[0], 1)))
-  if not on_cpu:
-    translation = translation.to(x.get_device())
+  translation = translation.to(x.get_device())
   x = translate(x, translation)
   x = translate(x, translation)
   # Pad if needed
@@ -55,7 +53,7 @@ def spatial_transformation_method(model, x, n_samples=None,
                                   dx_min=-0.1, dx_max=0.1, n_dxs=2,
                                   dy_min=-0.1, dy_max=0.1, n_dys=2,
                                   angle_min=-30, angle_max=30, n_angles=6,
-                                  black_border_size=0, on_cpu=False):
+                                  black_border_size=0):
   if dx_min < -1 or dy_min < -1 or dx_max > 1 or dy_max > 1:
       raise ValueError("The value of translation must be bounded "
                        "within [-1, 1]")
@@ -78,7 +76,7 @@ def spatial_transformation_method(model, x, n_samples=None,
   x = _apply_black_border(x, black_border_size)
   transformed_ims = []
   for transform in transforms:
-    transformed_ims.append(apply_transformation(x, transform, on_cpu))
+    transformed_ims.append(apply_transformation(x, transform))
   transformed_ims = ch.stack(transformed_ims)
 
   def _compute_xent(x):
@@ -103,11 +101,15 @@ def spatial_transformation_method(model, x, n_samples=None,
 if __name__ == "__main__":
   import sys
   model_path = sys.argv[1]
+  is_latent  = int(sys.argv[2])
+  if is_latent == 1:
+    latent = False
+  else:
+    latent = True
   _, val_loader = utils.get_cifar_dataloaders(64)
-  iterator = tqdm(val_loader)
   per_class_concept_latent = 80
   num_total_concepts       = 48
-  on_cpu = True
+  multi_gpus = True
   # C3, C4, Standard, Robust
   # Load model
   # model = vgg_model.vgg19_bn(pretrained=False, num_latent=per_class_concept_latent * num_total_concepts).cuda()
@@ -116,7 +118,6 @@ if __name__ == "__main__":
   # model.eval()
   # wrapped_model = utils.PyTorchWrapper(model)
   # C1, C2
-  latent = True
   models = []
   if latent:
     filename = "./meta_classifier_True"
@@ -126,14 +127,18 @@ if __name__ == "__main__":
   clf = pickle.load(open(filename, 'rb'))
 
   print("[Concept Classifiers] Loading")
-  for ccpath in os.listdir(model_path):
+  gpu_devices = ['cuda:0', 'cuda:1', 'cuda:2', 'cuda:3']
+  for i, ccpath in tqdm(enumerate(os.listdir((model_path)))):
     if latent:
-      model = utils.finetune_into_binary_with_features(vgg_model.vgg19_bn(pretrained=True), num_latent=80, on_cpu=on_cpu)
+      model = utils.finetune_into_binary_with_features(vgg_model.vgg19_bn(pretrained=True), num_latent=80, on_cpu=multi_gpus)
     else:
-      model = utils.finetune_into_binary(vgg_model.vgg19_bn(pretrained=True), on_cpu=on_cpu)
+      model = utils.finetune_into_binary(vgg_model.vgg19_bn(pretrained=True), on_cpu=multi_gpus)
     # Load weights into model
-    if on_cpu:
-      model.load_state_dict(ch.load(os.path.join(model_path, ccpath), map_location='cpu'))
+    if multi_gpus:
+      model = utils.WrappedModel(model)
+      checkpoint = ch.load(os.path.join(model_path, ccpath), map_location=gpu_devices[i % len(gpu_devices)])
+      model = model.to(gpu_devices[i % len(gpu_devices)])
+      model.load_state_dict(checkpoint)
     else:
       model.load_state_dict(ch.load(os.path.join(model_path, ccpath)))
     # Set to evaluation mode
@@ -142,11 +147,11 @@ if __name__ == "__main__":
   wrapped_model = utils.MultipleModelsWrapper(models, clf, latent)
   print("[Concept Classifiers] Loaded")
   acc, n_samples = 0, 0
+  iterator = tqdm(val_loader)
   for (im, label) in iterator:
     n_samples += im.shape[0]
-    if not on_cpu:
-      im = im.cuda()
-    adv_x = spatial_transformation_method(wrapped_model, im, on_cpu=on_cpu)
+    im = im.cuda()
+    adv_x = spatial_transformation_method(wrapped_model, im)
     preds = ch.argmax(wrapped_model(adv_x), 1).cpu()
     acc  += ch.sum(label == preds).cpu().item()
     iterator.set_description('Accuracy : %.2f' % (100 * acc / n_samples))
