@@ -23,40 +23,42 @@ if __name__ == "__main__":
     num_total_concepts       = 48
     gpu_devices = ['cuda:0', 'cuda:1', 'cuda:2', 'cuda:3']
     # C3
-    # model = vgg_model.vgg19_bn(pretrained=False, num_latent=per_class_concept_latent * num_total_concepts).cuda()
-    # checkpoint = ch.load(model_path)
-    # model.load_state_dict(checkpoint.module.state_dict())
-    # model.eval()
+    if is_latent == 3:
+        wrapped_model = vgg_model.vgg19_bn(pretrained=False, num_latent=per_class_concept_latent * num_total_concepts).cuda()
+        checkpoint = ch.load(model_path)
+        wrapped_model.load_state_dict(checkpoint.module.state_dict())
+        wrapped_model.eval()
     # C1, C2
-    # Load meta-classifier
-    models = []
-    if latent:
-        filename = "./meta_classifier_True"
     else:
-        filename = "./meta_classifier_False"
-    multi_gpus = True
-    clf = pickle.load(open(filename, 'rb'))
-    for i, ccpath in tqdm(enumerate(os.listdir(model_path))):
+        # Load meta-classifier
+        models = []
         if latent:
-            model = utils.finetune_into_binary_with_features(vgg_model.vgg19_bn(pretrained=True), num_latent=80, on_cpu=multi_gpus)
+            filename = "./meta_classifier_True"
         else:
-            model = utils.finetune_into_binary(vgg_model.vgg19_bn(pretrained=True), on_cpu=multi_gpus)
-        # Load weights into model
-        if multi_gpus:
-            # model.load_state_dict(ch.load(os.path.join(model_path, ccpath), map_location='cpu'))
-            model = utils.WrappedModel(model)
-            checkpoint = ch.load(os.path.join(model_path, ccpath), map_location=gpu_devices[i % len(gpu_devices)])
-            model = model.to(gpu_devices[i % len(gpu_devices)])
-            model.load_state_dict(checkpoint)
-        else:
-            model.load_state_dict(ch.load(os.path.join(model_path, ccpath)))
-        # Set to evaluation mode
-        model.eval()
-        models.append(model)
-    wrapped_model = utils.MultipleModelsWrapper(models, clf, latent)
-
+            filename = "./meta_classifier_False"
+        multi_gpus = True
+        clf = pickle.load(open(filename, 'rb'))
+        for i, ccpath in tqdm(enumerate(os.listdir(model_path))):
+            if latent:
+                model = utils.finetune_into_binary_with_features(vgg_model.vgg19_bn(pretrained=True), num_latent=80, on_cpu=multi_gpus)
+            else:
+                model = utils.finetune_into_binary(vgg_model.vgg19_bn(pretrained=True), on_cpu=multi_gpus)
+            # Load weights into model
+            if multi_gpus:
+                # model.load_state_dict(ch.load(os.path.join(model_path, ccpath), map_location='cpu'))
+                model = utils.WrappedModel(model)
+                checkpoint = ch.load(os.path.join(model_path, ccpath), map_location=gpu_devices[i % len(gpu_devices)])
+                model = model.to(gpu_devices[i % len(gpu_devices)])
+                model.load_state_dict(checkpoint)
+            else:
+                model.load_state_dict(ch.load(os.path.join(model_path, ccpath)))
+            # Set to evaluation mode
+            model.eval()
+            models.append(model)
+        wrapped_model = utils.MultipleModelsWrapper(models, clf, latent)
+        
     # Run attacks
-    _, val_loader = utils.get_cifar_dataloaders(1)
+    _, val_loader = utils.get_cifar_dataloaders(2)
     misclass, total = 0, 0
     iterator = tqdm(val_loader)
 
